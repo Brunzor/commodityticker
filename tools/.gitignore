@@ -1,0 +1,9 @@
+# Personal files: never share or commit these.
+discord.json
+discord_state.json
+feed_state.json
+*.tmp
+__pycache__/
+blizzard.json
+blizzard_token.json
+item_cache.json

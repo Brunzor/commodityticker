@@ -1,0 +1,8 @@
+{
+  "client_id": "PASTE_YOUR_CLIENT_ID_HERE",
+  "client_secret": "PASTE_YOUR_CLIENT_SECRET_HERE",
+  "region": "us",
+  "ruleset_id": 2,
+  "faction": "Horde",
+  "auction_house_id": 114
+}

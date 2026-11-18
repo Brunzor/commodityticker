@@ -1,0 +1,16 @@
+# Personal and generated files: never commit these.
+tools/discord.json
+tools/discord_state.json
+feed_state.json
+*.tmp
+__pycache__/
+*.pyc
+*.bak
+*.forever-*-bak
+# Blizzard API client (secret), cached OAuth token and item cache
+tools/blizzard.json
+tools/blizzard_token.json
+tools/item_cache.json
+blizzard.json
+blizzard_token.json
+item_cache.json
