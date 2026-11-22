@@ -1,5 +1,5 @@
 -- CommodityTicker: default watch lists (commodities only). Item IDs checked against the
--- Americas Normal Horde auction house and Wowhead/GameMaps Forever item pages (11 Nov 2026; charms 12 Nov 2026; ores and Arcane Crystal 14 Nov 2026).
+-- Americas Normal Horde auction house and Wowhead/GameMaps Forever item pages (11 Nov 2026; charms 12 Nov 2026; ores and Arcane Crystal 14 Nov 2026; elemental reagents 22 Nov 2026).
 local _, ns = ...
 
 ns.LISTS = {
@@ -44,6 +44,23 @@ ns.LISTS = {
     { id = 11370,  name = "Dark Iron Ore" },
     { id = 12363,  name = "Arcane Crystal" },
     { id = 12360,  name = "Arcanite Bar" },
+    -- Elemental reagents (22 Nov 2026). All Trade Goods / Elemental (class 7, subclass 10),
+    -- tradeable, listed on the AH. IDs verified against Blizzard's static-forever-us item API.
+    -- Essence of Eternity is not a Forever item (no such name in the item data) and is omitted.
+    { id = 7067,   name = "Elemental Earth" },
+    { id = 7068,   name = "Elemental Fire" },
+    { id = 7069,   name = "Elemental Air" },
+    { id = 7070,   name = "Elemental Water" },
+    { id = 7075,   name = "Core of Earth" },
+    { id = 7076,   name = "Essence of Earth" },
+    { id = 7077,   name = "Heart of Fire" },
+    { id = 7078,   name = "Essence of Fire" },
+    { id = 7079,   name = "Globe of Water" },
+    { id = 7080,   name = "Essence of Water" },
+    { id = 7081,   name = "Breath of Wind" },
+    { id = 7082,   name = "Essence of Air" },
+    { id = 12803,  name = "Living Essence" },
+    { id = 12808,  name = "Essence of Undeath" },
   },
   -- Level ~50+ high-value watch list.
   later = {

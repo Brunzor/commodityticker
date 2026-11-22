@@ -37,7 +37,7 @@ local DEFAULTS = {
   useAuctionator = true,
   point = { "TOP", "TOP", 0, -95 }, -- below the top-centre HUD widgets, above error text and zone text
 }
-CT.VERSION = "2.8.6"
+CT.VERSION = "2.8.7"
 CT.DEFAULT_POINT = { "TOP", "TOP", 0, -95 }
 CT.OLD_DEFAULT_POINT = { "TOP", "TOP", 0, -4 }  -- 2.0.0 and HerbTicker: covered top-of-screen text
 
