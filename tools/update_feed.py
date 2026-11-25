@@ -18,9 +18,12 @@ ID and secret (or set BLIZZARD_CLIENT_ID / BLIZZARD_CLIENT_SECRET). blizzard.jso
 is git-ignored - never share it.
 
 Each poll asks Blizzard "has the snapshot changed since <last one>?"
-(If-Modified-Since), so polls between hourly snapshots download nothing.
-History in feed_state.json is kept and only gets a new point when Blizzard
-publishes a fresh snapshot - a poll does not wipe old prices.
+(If-Modified-Since), so polls between hourly snapshots usually download nothing.
+If the watch list has gained items that are not in the last snapshot, the current
+snapshot is downloaded anyway and Feed.lua is rewritten so those items are priced
+straight away. History in feed_state.json is kept and only gets a new point when
+Blizzard publishes a fresh snapshot - a poll does not wipe old prices, and a
+rewrite for new watch-list items does not invent earlier points.
 
   python update_feed.py                      # one update, Americas Normal Horde
   python update_feed.py --loop               # update every 30 min until Ctrl+C
@@ -41,7 +44,8 @@ from email.utils import formatdate, parsedate_to_datetime
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import commodityticker_discord as discord
 
-FEED_SCRIPT_VERSION = "3.0.0"   # 3.0.0: Blizzard Game Data API instead of a third-party price page
+FEED_SCRIPT_VERSION = "3.0.1"   # 3.0.1: rewrite Feed.lua from the current snapshot when the watch list gains items
+                                 # 3.0.0: Blizzard Game Data API instead of a third-party price page
 HERE = os.path.dirname(os.path.abspath(__file__))
 ADDON = os.path.dirname(HERE)
 FEED = os.path.join(ADDON, "Feed.lua")
@@ -351,8 +355,22 @@ def summarize(auctions, commodities=()):
     return out
 
 
-def fetch_snapshot(api, cfg, state):
-    """Newest snapshot for the configured house, or None when Blizzard hasn't published a new one."""
+def new_watched_ids(state, watched):
+    """Watch-list ids added since Feed.lua was last written.
+
+    Unlisted watch-list items are not treated as new on every poll: only a change
+    to Data.lua (or a state file from before this field existed) triggers a rewrite.
+    """
+    prev = set(state.get("watched") or [])
+    return [i for i in sorted(watched) if i not in prev]
+
+
+def fetch_snapshot(api, cfg, state, refresh=False):
+    """Newest snapshot for the configured house, or None when Blizzard hasn't published a new one.
+
+    refresh=True downloads the current snapshot even if Last-Modified is unchanged, so
+    newly added watch-list items can be written into Feed.lua straight away.
+    """
     ns = f"dynamic-forever-{cfg['region']}"
     path = f"/data/wow/ruleset/{cfg['ruleset_id']}/auctions/{cfg['auction_house_id']}"
     same_market = state.get("market") == market_key(cfg)
@@ -361,11 +379,13 @@ def fetch_snapshot(api, cfg, state):
     # two hours we ask unconditionally and compare Last-Modified ourselves.
     if ims and time.time() - (_ts(ims) or 0) > STALE_304_AFTER:
         ims = None
+    if refresh:
+        ims = None
     status, auctions, lm = api.get(path, ns, if_modified_since=ims)
     if status == 304:
         return None
     updated = _ts(lm) or int(time.time())
-    if same_market and lm and lm == state.get("lm"):
+    if same_market and lm and lm == state.get("lm") and not refresh:
         return None
     _, comm, _ = api.get(path + "/commodities", ns)
     rows = summarize((auctions or {}).get("auctions") or [], (comm or {}).get("auctions") or [])
@@ -501,7 +521,12 @@ def update(cfg, force=False, every_min=DEFAULT_EVERY, api=None):
         sync_slots()
         return False
     api = api or Blizzard(cfg)
-    snap = fetch_snapshot(api, cfg, state)
+    watched = watched_ids()
+    missing = new_watched_ids(state, watched) if state.get("market") == market else []
+    if missing:
+        print(f"Watch list has {len(missing)} new item(s) not in the last snapshot; "
+              f"rewriting Feed.lua from the current auction house data.")
+    snap = fetch_snapshot(api, cfg, state, refresh=bool(missing))
     if snap is None:
         state["fetched"], state["every"] = int(time.time()), every_min
         save_state(state)
@@ -510,7 +535,6 @@ def update(cfg, force=False, every_min=DEFAULT_EVERY, api=None):
         sync_slots()
         return False
     rows, updated = snap["rows"], snap["updated"]
-    watched = watched_ids()
     info = load_items(api, (watched | EXTRA_COMMODITY_IDS | ALCHEMY_OUTPUTS) & set(rows))
     for i, r in rows.items():
         r["name"] = info.get(i, {}).get("n") or f"item {i}"
@@ -548,7 +572,8 @@ def update(cfg, force=False, every_min=DEFAULT_EVERY, api=None):
                 new_state_items[k] = dict(p, hist=hist)
     write_feed(market, cfg["faction"], market_label(cfg), auctions_url(cfg), updated, items, every_min, craft)
     state = {"source": "blizzard", "market": market, "fetched": int(time.time()), "updated": updated,
-             "lm": snap["lm"] or formatdate(updated, usegmt=True), "items": new_state_items, "every": every_min}
+             "lm": snap["lm"] or formatdate(updated, usegmt=True), "items": new_state_items, "every": every_min,
+             "watched": sorted(watched)}
     save_state(state)
     on_lists = len(watched & set(items))
     extra = f" and {len(craft)} alchemy outputs (craft, not on the ticker)" if craft else ""
