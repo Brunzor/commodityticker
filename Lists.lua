@@ -330,7 +330,10 @@ function CT:BarEntries(i, profItems)
   end
   if i == 1 then
     local tr = {}
-    for id, name in pairs(s.tracked) do tr[#tr + 1] = { id = id, name = name } end
+    local gone = c.removed or {}
+    for id, name in pairs(s.tracked) do
+      if not gone[id] then tr[#tr + 1] = { id = id, name = name } end -- 2.8.8: removing an item always wins
+    end
     table.sort(tr, function(a, b) return tostring(a.name) < tostring(b.name) end)
     for _, e in ipairs(tr) do push(e.id, e.name, "tracked", { tracked = true }) end
   end
@@ -377,8 +380,9 @@ function CT:Watched(i)
     end
   end
   -- tracked items are always refreshed, even with the main bar hidden
+  local gone = self.db.settings.removed or {}
   for id, name in pairs(self.db.settings.tracked) do
-    if not seen[id] then seen[id] = true; out[#out + 1] = { id = id, name = name, list = "tracked", tracked = true, bar = 1 } end
+    if not seen[id] and not gone[id] then seen[id] = true; out[#out + 1] = { id = id, name = name, list = "tracked", tracked = true, bar = 1 } end
   end
   return out, seen
 end
@@ -439,6 +443,7 @@ function CT:SetOnBar(id, i, on)
     if not (i == 1 and self:IsTracked(id)) then self:BarItems(i)[id] = self:ProfessionDataName(id) or self:ItemName(id) end
   else
     self:BarItems(i)[id] = nil
+    if i == 1 then self.db.settings.tracked[id] = nil end -- 2.8.8: a tracked item used to stay stuck on the main ticker
     c.removed[id] = true
   end
   self:Refresh()

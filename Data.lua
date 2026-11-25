@@ -1,5 +1,5 @@
 -- CommodityTicker: default watch lists (commodities only). Item IDs checked against the
--- Americas Normal Horde auction house and Wowhead/GameMaps Forever item pages (11 Nov 2026; charms 12 Nov 2026; ores and Arcane Crystal 14 Nov 2026; elemental reagents 22 Nov 2026).
+-- Americas Normal Horde auction house and Wowhead/GameMaps Forever item pages (11 Nov 2026; charms 12 Nov 2026; ores and Arcane Crystal 14 Nov 2026; elemental reagents 22 Nov 2026; power crystals 25 Nov 2026).
 local _, ns = ...
 
 ns.LISTS = {
@@ -61,6 +61,13 @@ ns.LISTS = {
     { id = 7082,   name = "Essence of Air" },
     { id = 12803,  name = "Living Essence" },
     { id = 12808,  name = "Essence of Undeath" },
+    -- Un'Goro power crystals (25 Nov 2026). Verified against Blizzard's static-forever-us item API
+    -- (item class Quest, common, stackable) and listed in bulk on the Americas Normal Horde auction
+    -- house (/auctions/114/commodities). The feed includes them because they are on this watch list.
+    { id = 11184,  name = "Blue Power Crystal" },
+    { id = 11185,  name = "Green Power Crystal" },
+    { id = 11186,  name = "Red Power Crystal" },
+    { id = 11188,  name = "Yellow Power Crystal" },
   },
   -- Level ~50+ high-value watch list.
   later = {

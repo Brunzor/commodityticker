@@ -37,7 +37,7 @@ local DEFAULTS = {
   useAuctionator = true,
   point = { "TOP", "TOP", 0, -95 }, -- below the top-centre HUD widgets, above error text and zone text
 }
-CT.VERSION = "2.8.7"
+CT.VERSION = "2.8.8"
 CT.DEFAULT_POINT = { "TOP", "TOP", 0, -95 }
 CT.OLD_DEFAULT_POINT = { "TOP", "TOP", 0, -4 }  -- 2.0.0 and HerbTicker: covered top-of-screen text
 
@@ -1460,6 +1460,7 @@ function CT:Track(text)
   if not id then CT.Print(nameOrErr); return nil end
   local name = self:ItemName(id, nameOrErr)
   self.db.settings.tracked[id] = name
+  if self.db.settings.removed then self.db.settings.removed[id] = nil end -- tracking it again brings it back
   CT.Print(format("tracking %s live: it's refreshed with every AH refresh (every %d min while the AH is open). With the AH closed it shows the feed.",
     name, self.db.settings.interval))
   self:Refresh()
@@ -1501,6 +1502,7 @@ function CT:InitDB()
   copyDefaults(self.db.settings, DEFAULTS)
   self:MigrateDefaultPoint()
   self:MigrateDefaultLook()
+  self:MigrateDropStuck288()
   self.db.version = 4
   return migrated
 end
@@ -1538,6 +1540,39 @@ function CT:MigrateDefaultLook()
     for _, b in ipairs(s.bars) do one(b) end
   end
   return true
+end
+
+-- 2.8.8, one time: Blue Pearl, Giant Egg and Wintersbite were saved as live-tracked items on the
+-- main ticker, and unticking them in the settings window never untracked them, so they could not be
+-- removed. Drop them from the saved selection (tracked, own items and a removed mark on every
+-- ticker so presets and profession picks don't bring them back). Only items that really are
+-- tracked/own items are touched, so other players' lists are not affected. The item database is
+-- unchanged and they can be added back any time (/commodity add, or tick them in settings).
+CT.DROP_288 = { 4611, 3819, 12207 }  -- Blue Pearl, Wintersbite, Giant Egg
+function CT:MigrateDropStuck288()
+  local s = self.db.settings
+  if s.dropStuck288 then return false end
+  s.dropStuck288 = true
+  s.tracked, s.extra, s.removed = s.tracked or {}, s.extra or {}, s.removed or {}
+  local dropped = false
+  for _, id in ipairs(CT.DROP_288) do
+    local bars = type(s.bars) == "table" and s.bars or {}
+    local present = s.tracked[id] ~= nil or s.extra[id] ~= nil
+    for _, b in ipairs(bars) do if type(b) == "table" and type(b.items) == "table" and b.items[id] ~= nil then present = true end end
+    if present then
+      dropped = true
+      s.tracked[id], s.extra[id] = nil, nil
+      s.removed[id] = true
+      for _, b in ipairs(bars) do
+        if type(b) == "table" then
+          if type(b.items) == "table" then b.items[id] = nil end
+          b.removed = type(b.removed) == "table" and b.removed or {}
+          b.removed[id] = true
+        end
+      end
+    end
+  end
+  return dropped
 end
 
 -- If the old HerbTicker addon is still installed and enabled, hide it and turn it off

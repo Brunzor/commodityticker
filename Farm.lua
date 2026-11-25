@@ -60,7 +60,10 @@ function CT:FarmCandidates(tierOnly)
       end
     end
   end
-  for _, id in ipairs(CT.FARM_EXTRA) do out[id] = out[id] or { extra = true } end
+  local gone = self.db and self.db.settings and self.db.settings.removed or {}
+  for _, id in ipairs(CT.FARM_EXTRA) do
+    if not gone[id] then out[id] = out[id] or { extra = true } end -- 2.8.8: removed from the main ticker = off the farm list too
+  end
   return out
 end
 

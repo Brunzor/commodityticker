@@ -5,7 +5,7 @@
 local _, ns = ...
 local CT = ns.CT
 
-local S = { rows = {}, tabs = {}, scroll = 0 }
+local S = { rows = {}, tabs = {}, scroll = 0, filter = "" }
 ns.Settings = S
 CT.Settings = S
 
@@ -214,6 +214,42 @@ function S:Create()
   local rx = 250
   local lists = text(f, "GameFontNormal", "Lists on this ticker")
   lists:SetPoint("TOPLEFT", rx, -102)
+
+  -- 2.8.8: search box for the item list (case-insensitive substring of the item name)
+  local sb
+  do
+    local ok, e = pcall(CreateFrame, "EditBox", "CommodityTickerSettingsSearch", f, "InputBoxTemplate")
+    if not ok or not e then e = CreateFrame("EditBox", "CommodityTickerSettingsSearch", f) end
+    sb = e
+  end
+  sb:SetSize(150, 20)
+  sb:SetPoint("TOPRIGHT", f, "TOPRIGHT", -46, -98)
+  sb:SetAutoFocus(false)
+  sb:SetMaxLetters(40)
+  if sb.SetFontObject and ChatFontNormal and not sb:GetFont() then sb:SetFontObject(ChatFontNormal) end
+  self.searchBox = sb
+  self.searchHint = text(f, "GameFontDisableSmall", "Search items...")
+  self.searchHint:SetPoint("LEFT", sb, "LEFT", 6, 0)
+  self.clearBtn = button(f, "x", 22)
+  self.clearBtn:SetPoint("LEFT", sb, "RIGHT", 4, 0)
+  self.clearBtn:SetScript("OnClick", function() S:ClearSearch() end)
+  self.clearBtn:SetScript("OnEnter", function(b)
+    GameTooltip:SetOwner(b, "ANCHOR_BOTTOM")
+    GameTooltip:AddLine("Clear the search")
+    GameTooltip:Show()
+  end)
+  self.clearBtn:SetScript("OnLeave", function() GameTooltip:Hide() end)
+  sb:SetScript("OnTextChanged", function(b) S:SetFilter(b:GetText()) end)
+  sb:SetScript("OnEscapePressed", function(b)
+    if (b:GetText() or "") ~= "" then b:SetText("") end -- first Esc clears; the box also loses focus
+    b:ClearFocus()
+    S:SetFilter("")
+  end)
+  sb:SetScript("OnEnterPressed", function(b) b:ClearFocus() end)
+  sb:SetScript("OnEditFocusGained", function() S:UpdateSearchHint() end)
+  sb:SetScript("OnEditFocusLost", function() S:UpdateSearchHint() end)
+  f:SetScript("OnHide", function() S:ResetSearch() end) -- reset on close
+  self:UpdateSearchHint()
   self.srcCB = {}
   local y = -120
   for _, key in ipairs({ "profession", "now", "later" }) do
@@ -333,6 +369,53 @@ function S:Toggle(r, on)
   self:Update()
 end
 
+-- Search: the list shows only items whose name contains the typed text (case-insensitive,
+-- plain substring). Empty text shows everything.
+function S:UpdateSearchHint()
+  if not self.searchBox then return end
+  local empty = (self.searchBox:GetText() or "") == ""
+  local focused = self.searchBox.HasFocus and self.searchBox:HasFocus()
+  if empty and not focused then self.searchHint:Show() else self.searchHint:Hide() end
+  if empty then self.clearBtn:Hide() else self.clearBtn:Show() end
+end
+
+function S:SetFilter(txt)
+  txt = tostring(txt or ""):gsub("^%s+", ""):gsub("%s+$", ""):lower()
+  self:UpdateSearchHint()
+  if txt == self.filter then return end
+  self.filter = txt
+  self.scroll = 0
+  self:Update()
+end
+
+function S:ClearSearch()
+  if self.searchBox then
+    self.searchBox:SetText("")
+    self.searchBox:ClearFocus()
+  end
+  self:SetFilter("")
+end
+
+function S:ResetSearch()
+  self.filter = ""
+  self.scroll = 0
+  if self.searchBox then
+    self.searchBox:SetText("")
+    self.searchBox:ClearFocus()
+  end
+  self:UpdateSearchHint()
+end
+
+function S:Filtered(all)
+  local q = self.filter or ""
+  if q == "" then return all end
+  local out = {}
+  for _, row in ipairs(all) do
+    if tostring(row.name or ""):lower():find(q, 1, true) then out[#out + 1] = row end
+  end
+  return out
+end
+
 function S:Scroll(delta)
   local n = #(self.items or {})
   self.scroll = max(0, min(max(0, n - ROWS), self.scroll + delta))
@@ -357,7 +440,12 @@ function S:UpdateRows()
     end
   end
   local n = #items
-  self.pageText:SetText(n == 0 and "nothing to show" or format("%d-%d of %d", min(n, self.scroll + 1), min(n, self.scroll + ROWS), n))
+  local searching = (self.filter or "") ~= ""
+  if n == 0 then
+    self.pageText:SetText(searching and "no items match your search" or "nothing to show")
+  else
+    self.pageText:SetText(format(searching and "%d-%d of %d matching" or "%d-%d of %d", min(n, self.scroll + 1), min(n, self.scroll + ROWS), n))
+  end
 end
 
 function S:Update()
@@ -429,7 +517,8 @@ function S:Update()
   for _ in pairs(CT:ProfessionItems()) do profN = profN + 1 end
   self.profText:SetText(format("Professions: |cffffffff%s|r - %d current-tier picks", CT:ProfessionSummary(), profN))
   self.updating = false
-  self.items = CT:Candidates(self.bar)
+  self.allItems = CT:Candidates(self.bar)
+  self.items = self:Filtered(self.allItems)
   self.scroll = max(0, min(self.scroll, max(0, #self.items - ROWS)))
   self:UpdateRows()
 end
