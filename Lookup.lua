@@ -10,7 +10,7 @@ local Lookup = {}
 ns.Lookup = Lookup
 
 local format, max = string.format, math.max
-local W, H = 460, 406
+local W, H = 560, 430
 local PAD = 14
 
 local function paintBtn(b, on)
@@ -71,11 +71,7 @@ function Lookup:Create()
   f:RegisterForDrag("LeftButton")
   f:SetScript("OnDragStart", f.StartMoving)
   f:SetScript("OnDragStop", f.StopMovingOrSizing)
-  if f.SetBackdrop then
-    f:SetBackdrop({ bgFile = "Interface\\Buttons\\WHITE8x8", edgeFile = "Interface\\Buttons\\WHITE8x8", edgeSize = 1 })
-    f:SetBackdropColor(0.02, 0.03, 0.03, 0.94)
-    f:SetBackdropBorderColor(0.15, 0.6, 0.25, 0.85)
-  end
+  CT.StyleOpaqueWindow(f)
   tinsert(UISpecialFrames, "CommodityTickerLookupFrame") -- Escape closes it
 
   local title = f:CreateFontString(nil, "OVERLAY", "GameFontNormal")
@@ -178,9 +174,12 @@ function Lookup:Create()
   local rangeW = math.floor((W - PAD * 2 - rangeGap * (#ranges - 1)) / #ranges)
   local rangeRow = CreateFrame("Frame", nil, f)
   rangeRow:SetHeight(rangeH)
-  rangeRow:SetPoint("TOPLEFT", self.status, "BOTTOMLEFT", 0, -8)
+  -- Pin to the frame, not to the indented item-title column (that used to push 30d off the right edge).
+  rangeRow:SetPoint("TOP", self.status, "BOTTOM", 0, -8)
+  rangeRow:SetPoint("LEFT", f, "LEFT", PAD, 0)
   rangeRow:SetPoint("RIGHT", f, "RIGHT", -PAD, 0)
   self.rangeRow = rangeRow
+  f.rangeRow = rangeRow
   for i, days in ipairs(ranges) do
     local b = button(f, days .. "d", rangeW)
     b:SetHeight(rangeH)
@@ -202,16 +201,6 @@ function Lookup:Create()
     self.rangeBtns[i] = b
   end
   f.rangeBtns = self.rangeBtns
-
-  self.graph = ns.Graph.Create(f, W - PAD * 2, 132, false)
-  self.graph:SetPoint("TOPLEFT", rangeRow, "BOTTOMLEFT", 0, -6)
-  self.graph:SetPoint("RIGHT", f, "RIGHT", -PAD, 0)
-
-  self.summary = f:CreateFontString(nil, "OVERLAY", "GameFontDisableSmall")
-  self.summary:SetPoint("TOPLEFT", self.graph, "BOTTOMLEFT", 0, -6)
-  self.summary:SetPoint("RIGHT", f, "RIGHT", -PAD, 0)
-  self.summary:SetJustifyH("LEFT")
-  self.summary:SetWordWrap(true)
 
   local btnW = math.floor((W - PAD * 2 - 16) / 3)
   self.trackBtn = button(f, "Track live", btnW)
@@ -247,6 +236,21 @@ function Lookup:Create()
   self.ahBtn = button(f, "Check AH now", btnW)
   self.ahBtn:SetPoint("LEFT", self.tickerBtn, "RIGHT", 8, 0)
   self.ahBtn:SetScript("OnClick", function() if self.id then CT:Lookup(tostring(self.id), true) end end)
+  f.trackBtn, f.tickerBtn, f.ahBtn = self.trackBtn, self.tickerBtn, self.ahBtn
+
+  -- Summary sits above the footer buttons so a wrapping line cannot cover them.
+  self.summary = f:CreateFontString(nil, "OVERLAY", "GameFontDisableSmall")
+  self.summary:SetPoint("BOTTOMLEFT", self.trackBtn, "TOPLEFT", 0, 8)
+  self.summary:SetPoint("RIGHT", f, "RIGHT", -PAD, 0)
+  self.summary:SetJustifyH("LEFT")
+  self.summary:SetWordWrap(true)
+  f.summary = self.summary
+
+  self.graph = ns.Graph.Create(f, W - PAD * 2, 132, false)
+  self.graph:SetPoint("TOPLEFT", rangeRow, "BOTTOMLEFT", 0, -6)
+  self.graph:SetPoint("RIGHT", f, "RIGHT", -PAD, 0)
+  self.graph:SetPoint("BOTTOM", self.summary, "TOP", 0, 8)
+  f.graph = self.graph
 
   -- Shift-clicking an item while the search box has focus puts it in the box.
   local function onInsert(link)
@@ -277,6 +281,7 @@ end
 function Lookup:Open()
   self:Create()
   self.frame:Show()
+  if self.frame.Raise then self.frame:Raise() end
   if not self.id then self:ShowEmpty() end
   self.box:SetFocus()
 end

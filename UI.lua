@@ -259,8 +259,8 @@ function UI:CreateHoverPanel()
   p:SetFrameStrata("TOOLTIP")
   if p.SetBackdrop then
     p:SetBackdrop({ bgFile = "Interface\\Buttons\\WHITE8x8", edgeFile = "Interface\\Buttons\\WHITE8x8", edgeSize = 1 })
-    p:SetBackdropColor(0, 0, 0, 0.9)
-    p:SetBackdropBorderColor(0.15, 0.6, 0.25, 0.9)
+    p:SetBackdropColor(0, 0, 0, 1)
+    p:SetBackdropBorderColor(0.15, 0.6, 0.25, 1)
   end
   p.title = p:CreateFontString(nil, "OVERLAY", "GameFontNormal")
   p.title:SetPoint("TOPLEFT", 8, -6)

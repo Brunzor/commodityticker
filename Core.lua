@@ -43,7 +43,7 @@ local DEFAULTS = {
   graphRange = 14,     -- lookup graph time window in days (1, 3, 7, 14 or 30)
   point = { "TOP", "TOP", 0, -95 }, -- below the top-centre HUD widgets, above error text and zone text
 }
-CT.VERSION = "2.8.9"
+CT.VERSION = "2.8.10"
 CT.DEFAULT_POINT = { "TOP", "TOP", 0, -95 }
 CT.OLD_DEFAULT_POINT = { "TOP", "TOP", 0, -4 }  -- 2.0.0 and HerbTicker: covered top-of-screen text
 
@@ -76,6 +76,53 @@ end
 
 function CT.Print(msg)
   print("|cff33ff99CommodityTicker|r: " .. tostring(msg))
+end
+
+-- Solid, click-to-front chrome for lookup, best farm and settings, so stacked
+-- windows never show through each other (2.8.10).
+CT.WINDOW_BG = { 0.02, 0.03, 0.03, 1 }
+CT.WINDOW_BORDER = { 0.15, 0.6, 0.25, 1 }
+
+function CT.StyleOpaqueWindow(f, opts)
+  if not f then return f end
+  opts = opts or {}
+  local bg = opts.bg or CT.WINDOW_BG
+  local bd = opts.border or CT.WINDOW_BORDER
+  if f.SetBackdrop then
+    f:SetBackdrop({
+      bgFile = "Interface\\Buttons\\WHITE8x8",
+      edgeFile = opts.edgeFile or "Interface\\Buttons\\WHITE8x8",
+      edgeSize = opts.edgeSize or 1,
+      tile = opts.tile, tileSize = opts.tileSize,
+      insets = opts.insets,
+    })
+    if f.SetBackdropColor then f:SetBackdropColor(bg[1], bg[2], bg[3], 1) end
+    if f.SetBackdropBorderColor then f:SetBackdropBorderColor(bd[1], bd[2], bd[3], bd[4] or 1) end
+  end
+  if f.CreateTexture and not f.ctSolid then
+    local tex = f:CreateTexture(nil, "BACKGROUND")
+    if tex.SetDrawLayer then tex:SetDrawLayer("BACKGROUND", -8) end
+    if tex.SetColorTexture then tex:SetColorTexture(bg[1], bg[2], bg[3], 1) end
+    if tex.SetAllPoints then tex:SetAllPoints(f) end
+    f.ctSolid = tex
+  end
+  if f.SetFrameStrata then f:SetFrameStrata(opts.strata or "DIALOG") end
+  if f.SetToplevel then f:SetToplevel(true) end
+  if f.EnableMouse then f:EnableMouse(true) end
+  local function front(self)
+    if self and self.Raise then self:Raise() elseif f.Raise then f:Raise() end
+  end
+  if f.HookScript then
+    f:HookScript("OnMouseDown", front)
+    f:HookScript("OnShow", front)
+  else
+    local prevDown, prevShow = f.GetScript and f:GetScript("OnMouseDown"), f.GetScript and f:GetScript("OnShow")
+    if f.SetScript then
+      f:SetScript("OnMouseDown", function(self, ...) front(self); if prevDown then prevDown(self, ...) end end)
+      f:SetScript("OnShow", function(self, ...) front(self); if prevShow then prevShow(self, ...) end end)
+    end
+  end
+  return f
 end
 
 ------------------------------------------------------------------------

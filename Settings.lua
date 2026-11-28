@@ -94,7 +94,11 @@ function S:Create()
   f:RegisterForDrag("LeftButton")
   f:SetScript("OnDragStart", function(s) s:StartMoving() end)
   f:SetScript("OnDragStop", function(s) s:StopMovingOrSizing() end)
-  backdrop(f, true)
+  CT.StyleOpaqueWindow(f, {
+    edgeFile = "Interface\\DialogFrame\\UI-DialogBox-Border",
+    edgeSize = 16, tile = true, tileSize = 16,
+    insets = { left = 4, right = 4, top = 4, bottom = 4 },
+  })
   if UISpecialFrames then tinsert(UISpecialFrames, "CommodityTickerSettingsFrame") end -- Esc closes it
 
   local title = text(f, "GameFontNormalLarge", "CommodityTicker settings")
@@ -337,6 +341,7 @@ function S:Open(i)
   self:Create()
   CT:UpdateProfessions(true)
   self.frame:Show()
+  if self.frame.Raise then self.frame:Raise() end
   self:Select(i or CT:TargetBar())
 end
 

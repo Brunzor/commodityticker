@@ -255,11 +255,7 @@ function Farm:Create()
   f:RegisterForDrag("LeftButton")
   f:SetScript("OnDragStart", f.StartMoving)
   f:SetScript("OnDragStop", f.StopMovingOrSizing)
-  if f.SetBackdrop then
-    f:SetBackdrop({ bgFile = "Interface\\Buttons\\WHITE8x8", edgeFile = "Interface\\Buttons\\WHITE8x8", edgeSize = 1 })
-    f:SetBackdropColor(0.02, 0.03, 0.03, 0.94)
-    f:SetBackdropBorderColor(0.15, 0.6, 0.25, 0.85)
-  end
+  CT.StyleOpaqueWindow(f)
   tinsert(UISpecialFrames, "CommodityTickerFarmFrame") -- Escape closes it
   f:SetScript("OnHide", function() self.rows = {} end)  -- drop row data while closed
 
@@ -445,6 +441,7 @@ end
 function Farm:Open()
   self:Create()
   self.frame:Show()
+  if self.frame.Raise then self.frame:Raise() end
   self:Update()
 end
 
