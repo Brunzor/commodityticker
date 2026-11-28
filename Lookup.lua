@@ -10,7 +10,7 @@ local Lookup = {}
 ns.Lookup = Lookup
 
 local format, max = string.format, math.max
-local W, H = 460, 378
+local W, H = 460, 406
 local PAD = 14
 
 local function paintBtn(b, on)
@@ -172,8 +172,39 @@ function Lookup:Create()
   self.status:SetJustifyH("LEFT")
   self.status:SetWordWrap(true)
 
+  self.rangeBtns = {}
+  local ranges = CT.GRAPH_RANGES
+  local rangeGap, rangeH = 6, 20
+  local rangeW = math.floor((W - PAD * 2 - rangeGap * (#ranges - 1)) / #ranges)
+  local rangeRow = CreateFrame("Frame", nil, f)
+  rangeRow:SetHeight(rangeH)
+  rangeRow:SetPoint("TOPLEFT", self.status, "BOTTOMLEFT", 0, -8)
+  rangeRow:SetPoint("RIGHT", f, "RIGHT", -PAD, 0)
+  self.rangeRow = rangeRow
+  for i, days in ipairs(ranges) do
+    local b = button(f, days .. "d", rangeW)
+    b:SetHeight(rangeH)
+    b.days = days
+    if i == 1 then
+      b:SetPoint("TOPLEFT", rangeRow, "TOPLEFT", 0, 0)
+    else
+      b:SetPoint("LEFT", self.rangeBtns[i - 1], "RIGHT", rangeGap, 0)
+    end
+    b:SetScript("OnClick", function()
+      CT:SetGraphRange(days)
+      self:PaintRange()
+      self:Update()
+    end)
+    b:SetScript("OnEnter", function(btn)
+      if btn.SetBackdropColor then btn:SetBackdropColor(0.12, 0.28, 0.16, 0.95) end
+    end)
+    b:SetScript("OnLeave", function() self:PaintRange() end)
+    self.rangeBtns[i] = b
+  end
+  f.rangeBtns = self.rangeBtns
+
   self.graph = ns.Graph.Create(f, W - PAD * 2, 132, false)
-  self.graph:SetPoint("TOPLEFT", self.status, "BOTTOMLEFT", 0, -8)
+  self.graph:SetPoint("TOPLEFT", rangeRow, "BOTTOMLEFT", 0, -6)
   self.graph:SetPoint("RIGHT", f, "RIGHT", -PAD, 0)
 
   self.summary = f:CreateFontString(nil, "OVERLAY", "GameFontDisableSmall")
@@ -234,6 +265,14 @@ function Lookup:Create()
   f:Hide()
   return f
 end
+
+function Lookup:PaintRange()
+  local cur = CT:GraphRange()
+  for _, b in ipairs(self.rangeBtns or {}) do
+    paintBtn(b, b.days == cur)
+  end
+end
+
 
 function Lookup:Open()
   self:Create()
@@ -306,6 +345,7 @@ function Lookup:ShowEmpty()
   self.price:SetText("")
   self:PlaceExtras(nil)
   self.status:SetText(CT.ahOpen and "The auction house is open: lookups query it live." or "Auction house closed. Lookups use the feed and your last scan.")
+  self:PaintRange()
   self.graph:SetSeries(nil)
   self.summary:SetText("")
   self.trackBtn:Disable(); self.tickerBtn:Disable(); self.ahBtn:Disable()
@@ -374,9 +414,17 @@ function Lookup:Update()
   end
   self.statusText = nil
   self.status:SetText(status)
-  local series = CT:Series(id)
-  self.graph:SetSeries(series)
-  self.summary:SetText(ns.Graph.Summary(series) .. format("  ·  keeps %d days / %d points", CT.HISTORY_DAYS, CT.HISTORY_POINTS))
+  self:PaintRange()
+  local days = CT:GraphRange()
+  local all = CT:Series(id)
+  local series = CT:SeriesInRange(id, days)
+  local now = time()
+  local win = { tMin = now - days * 86400, tMax = now }
+  if #series == 0 and #all > 0 then
+    win.empty = "No prices in this range yet."
+  end
+  self.graph:SetSeries(series, win)
+  self.summary:SetText(ns.Graph.Summary(series) .. format("  ·  %dd view  ·  keeps %d days", days, CT.HISTORY_DAYS))
   self.trackBtn:Enable()
   self.trackBtn:SetText(CT:IsTracked(id) and "Stop tracking" or "Track live")
   if self.trackBtn.label then self.trackBtn.label:SetText(self.trackBtn:GetText() or "") end

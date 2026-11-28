@@ -22,6 +22,7 @@ local SRC_COLOR = {
 -- two Line widgets (glow + stroke) on both looping tapes — that was the
 -- ~100 MB+ addon memory. Sparks keep at most this many points and no glow.
 Graph.SPARK_MAX_POINTS = 24
+Graph.SMALL_MAX_POINTS = 48  -- hover-panel graph; the full lookup chart draws every point in range
 
 function Graph.FitPoints(points, maxN)
   local n = points and #points or 0
@@ -214,14 +215,29 @@ end
 local function color(p) return SRC_COLOR[p.s] or SRC_COLOR.default end
 
 -- points: { {t=, p=, q=, s=}, ... } oldest first. Returns the number of points drawn.
-function Graph:SetSeries(points)
+function Graph:SetSeries(points, window)
   if self.spark and points and #points > Graph.SPARK_MAX_POINTS then
     points = Graph.FitPoints(points, Graph.SPARK_MAX_POINTS)
+  elseif self.small and not self.spark and points and #points > Graph.SMALL_MAX_POINTS then
+    points = Graph.FitPoints(points, Graph.SMALL_MAX_POINTS)
   end
   self:Clear()
+  if window and window.tMin and window.tMax and window.tMax > window.tMin and points then
+    local clipped = {}
+    for _, p in ipairs(points) do
+      if p.t and p.t >= window.tMin and p.t <= window.tMax then clipped[#clipped + 1] = p end
+    end
+    points = clipped
+  end
   local n = points and #points or 0
   if n == 0 then
-    self.msg:SetText(self.spark and "no history" or "No price history yet. Visit the auction house, or run the feed updater and /reload.")
+    if self.spark then
+      self.msg:SetText("no history")
+    elseif window and window.empty then
+      self.msg:SetText(window.empty)
+    else
+      self.msg:SetText("No price history yet. Visit the auction house, or run the feed updater and /reload.")
+    end
     return 0
   end
   local plot = self.plot
@@ -230,6 +246,9 @@ function Graph:SetSeries(points)
   if h <= 0 then h = (self:GetHeight() or 0) - self.padT - self.padB end
 
   local tMin, tMax, pMin, pMax = points[1].t, points[n].t, points[1].p, points[1].p
+  if window and window.tMin and window.tMax and window.tMax > window.tMin then
+    tMin, tMax = window.tMin, window.tMax
+  end
   for _, p in ipairs(points) do pMin = min(pMin, p.p); pMax = max(pMax, p.p) end
   if pMax == pMin then
     local pad = max(1, floor(pMax * 0.05))

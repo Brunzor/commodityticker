@@ -9,8 +9,13 @@ _G.CommodityTicker = CT
 
 local floor, max, min, format, time = math.floor, math.max, math.min, string.format, time
 
-CT.HISTORY_DAYS = 14     -- history kept per item...
-CT.HISTORY_POINTS = 200  -- ...and at most this many points per item
+CT.HISTORY_DAYS = 30         -- history kept per item (days)
+CT.HISTORY_FULL_DAYS = 2     -- keep every point in this recent window
+CT.HISTORY_HOURLY_DAYS = 14  -- then at most one point per hour
+CT.HISTORY_LONG_SECS = 4 * 3600  -- then at most one point per 4 hours out to HISTORY_DAYS
+CT.HISTORY_POINTS = 1000     -- safety cap after downsampling
+CT.GRAPH_RANGES = { 1, 3, 7, 14, 30 }
+CT.GRAPH_RANGE_DEFAULT = 14
 
 local DEFAULTS = {
   shown = true,
@@ -35,9 +40,10 @@ local DEFAULTS = {
   useFeed = true,       -- read Feed.lua written by tools/update_feed.py
   trendIcons = true,    -- 2.4.5: large ^ / v / = (the game font has no triangle glyphs)
   useAuctionator = true,
+  graphRange = 14,     -- lookup graph time window in days (1, 3, 7, 14 or 30)
   point = { "TOP", "TOP", 0, -95 }, -- below the top-centre HUD widgets, above error text and zone text
 }
-CT.VERSION = "2.8.8"
+CT.VERSION = "2.8.9"
 CT.DEFAULT_POINT = { "TOP", "TOP", 0, -95 }
 CT.OLD_DEFAULT_POINT = { "TOP", "TOP", 0, -4 }  -- 2.0.0 and HerbTicker: covered top-of-screen text
 
@@ -480,12 +486,33 @@ function CT:Market()
   return m
 end
 
+-- Keep a 30-day window: every recent point, then hourly, then 4-hourly.
+-- Latest point in each bucket is kept. Mutates h in place (callers hold the table).
 local function trimHistory(h, now)
   local cutoff = now - CT.HISTORY_DAYS * 86400
-  local i = 1
-  while h[i] and h[i].t < cutoff do i = i + 1 end
-  if i > 1 then for _ = 1, i - 1 do table.remove(h, 1) end end
-  while #h > CT.HISTORY_POINTS do table.remove(h, 1) end
+  local fullAfter = now - CT.HISTORY_FULL_DAYS * 86400
+  local hourlyAfter = now - CT.HISTORY_HOURLY_DAYS * 86400
+  local kept, lastKey, lastI = {}, nil, nil
+  for _, p in ipairs(h) do
+    if p.t and p.t >= cutoff then
+      if p.t >= fullAfter then
+        kept[#kept + 1] = p
+        lastKey = nil
+      else
+        local width = (p.t >= hourlyAfter) and 3600 or CT.HISTORY_LONG_SECS
+        local key = width .. ":" .. (math.floor(p.t / width) * width)
+        if key ~= lastKey then
+          kept[#kept + 1] = p
+          lastKey, lastI = key, #kept
+        else
+          kept[lastI] = p
+        end
+      end
+    end
+  end
+  while #kept > CT.HISTORY_POINTS do table.remove(kept, 1) end
+  for i = 1, #kept do h[i] = kept[i] end
+  for i = #h, #kept + 1, -1 do h[i] = nil end
 end
 
 -- Append one real observation. Repeated AH events for the same item within
@@ -556,11 +583,39 @@ function CT:Series(id)
   for _, p in ipairs(self:Market().hist[id] or {}) do add(p) end
   for _, p in ipairs(self:FeedPoints(id)) do add(p) end
   table.sort(out, function(a, b) return a.t < b.t end)
-  local cutoff = time() - CT.HISTORY_DAYS * 86400
-  local trimmed = {}
-  for _, p in ipairs(out) do if p.t >= cutoff then trimmed[#trimmed + 1] = p end end
-  while #trimmed > CT.HISTORY_POINTS do table.remove(trimmed, 1) end
-  return trimmed
+  trimHistory(out, time())
+  return out
+end
+
+function CT:GraphRange()
+  local d = tonumber(self.db and self.db.settings and self.db.settings.graphRange)
+  for _, v in ipairs(CT.GRAPH_RANGES) do
+    if d == v then return v end
+  end
+  return CT.GRAPH_RANGE_DEFAULT
+end
+
+function CT:SetGraphRange(days)
+  days = tonumber(days)
+  local ok = false
+  for _, v in ipairs(CT.GRAPH_RANGES) do if days == v then ok = true end end
+  if not ok or not self.db or not self.db.settings then return self:GraphRange() end
+  if self.db.settings.graphRange ~= days then
+    self.db.settings.graphRange = days
+    self.dirty = true
+  end
+  return days
+end
+
+-- Points that fall inside a graph range ending now. days nil = the saved/default range.
+function CT:SeriesInRange(id, days)
+  days = days or self:GraphRange()
+  local cutoff = time() - days * 86400
+  local out = {}
+  for _, p in ipairs(self:Series(id)) do
+    if p.t >= cutoff then out[#out + 1] = p end
+  end
+  return out
 end
 
 -- Record one observed price (copper per unit) from the in-game auction house.

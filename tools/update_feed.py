@@ -8,8 +8,9 @@ goods, ore, bars, stone, leather, cloth, enchanting/elemental mats, engineering
 parts, cooking mats, reagents - never gear, weapons, recipes or quest items).
 Alchemy recipe outputs up to skill 300 (potions, elixirs, flasks, the
 Philosopher's Stone, and other craft products) are stored in a separate `craft`
-table so they are not treated as commodities. Adds a short real price history
-per item, and writes ../Feed.lua. The game reads that file at login or /reload,
+table so they are not treated as commodities. Keeps up to 30 days of real price history per item in feed_state.json,
+writes a downsampled history into ../Feed.lua (all points from the last
+two days, hourly back to 14 days, then one point every four hours), The game reads that file at login or /reload,
 and can also re-read a copied slot mid-session via /commodity loadfeed.
 
 Setup: create a free API client at https://develop.battle.net/access/clients,
@@ -24,6 +25,8 @@ snapshot is downloaded anyway and Feed.lua is rewritten so those items are price
 straight away. History in feed_state.json is kept and only gets a new point when
 Blizzard publishes a fresh snapshot - a poll does not wipe old prices, and a
 rewrite for new watch-list items does not invent earlier points.
+A change to the history-export policy also rewrites Feed.lua from the
+current snapshot (no extra history point) so a longer history is picked up.
 
   python update_feed.py                      # one update, Americas Normal Horde
   python update_feed.py --loop               # update every 30 min until Ctrl+C
@@ -44,7 +47,8 @@ from email.utils import formatdate, parsedate_to_datetime
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import commodityticker_discord as discord
 
-FEED_SCRIPT_VERSION = "3.0.1"   # 3.0.1: rewrite Feed.lua from the current snapshot when the watch list gains items
+FEED_SCRIPT_VERSION = "3.0.2"   # 3.0.2: 30-day history in feed_state; Feed.lua writes 30 days, downsampled
+                                 # 3.0.1: rewrite Feed.lua from the current snapshot when the watch list gains items
                                  # 3.0.0: Blizzard Game Data API instead of a third-party price page
 HERE = os.path.dirname(os.path.abspath(__file__))
 ADDON = os.path.dirname(HERE)
@@ -84,9 +88,13 @@ ITEM_CLASSES_MAX_AGE = 7 * 86400
 # 11 Quiver, 12 Quest, 13 Key, 15 Miscellaneous. Consumable alchemy outputs are still
 # captured, but only in the craft table (see ALCHEMY_OUTPUTS).
 COMMODITY_CLASSES = (7, 5)
-HISTORY_DAYS = 14        # kept in feed_state.json (same window as the addon)
-HISTORY_POINTS = 200
-FEED_HISTORY_POINTS = 24  # earlier points written into Feed.lua per item (keeps the file small)
+HISTORY_DAYS = 30        # kept in feed_state.json (same window as the addon)
+HISTORY_POINTS = 1000    # safety cap after the time window; 30 days of hourly snapshots is 720
+FEED_HISTORY_DAYS = 30   # earlier points written into Feed.lua, downsampled to keep the file small
+FEED_FULL_SECONDS = 2 * 86400     # last two days: every snapshot
+FEED_HOURLY_SECONDS = 14 * 86400  # then one point per hour through 14 days
+FEED_LONG_BUCKET = 4 * 3600       # then one point per four hours through 30 days
+HIST_POLICY = "30d-2full-14h-4h"  # bump when the Feed.lua history export changes
 # Market price: quantity-weighted mean of the cheapest 25% of listed units, ignoring
 # units priced over 1.5x that first estimate (one silly listing can't skew it).
 MARKET_SHARE = 0.25
@@ -369,7 +377,7 @@ def fetch_snapshot(api, cfg, state, refresh=False):
     """Newest snapshot for the configured house, or None when Blizzard hasn't published a new one.
 
     refresh=True downloads the current snapshot even if Last-Modified is unchanged, so
-    newly added watch-list items can be written into Feed.lua straight away.
+    newly added watch-list items, or a history-export policy change, can be written into Feed.lua straight away.
     """
     ns = f"dynamic-forever-{cfg['region']}"
     path = f"/data/wow/ruleset/{cfg['ruleset_id']}/auctions/{cfg['auction_house_id']}"
@@ -459,9 +467,36 @@ def lua_str(s):
     return '"' + str(s).replace("\\", "\\\\").replace('"', '\\"').replace("\n", " ") + '"'
 
 
+def downsample_for_feed(hist, updated):
+    """Earlier points for Feed.lua: full resolution for 2 days, hourly to 14, then 4-hourly."""
+    cutoff = updated - FEED_HISTORY_DAYS * 86400
+    full_after = updated - FEED_FULL_SECONDS
+    hourly_after = updated - FEED_HOURLY_SECONDS
+    out = []
+    last_key = None
+    last_i = None
+    for row in hist:
+        t = row[0]
+        if t < cutoff or t >= updated:
+            continue
+        if t >= full_after:
+            out.append(row)
+            last_key = None
+            continue
+        width = 3600 if t >= hourly_after else FEED_LONG_BUCKET
+        key = (width, (t // width) * width)
+        if key != last_key:
+            out.append(row)
+            last_key = key
+            last_i = len(out) - 1
+        else:
+            out[last_i] = row
+    return out
+
+
 def history_string(hist, updated):
     """Earlier real points as 'minutesBefore:price:qty,...' (the current price is min/qty)."""
-    earlier = [p for p in hist if p[0] < updated][-FEED_HISTORY_POINTS:]
+    earlier = downsample_for_feed(hist, updated)
     return ",".join(f"{(updated - t) // 60}:{p}:{'' if q is None else q}" for t, p, q in earlier)
 
 
@@ -513,7 +548,12 @@ def update(cfg, force=False, every_min=DEFAULT_EVERY, api=None):
     every_min = clamp_every(every_min)
     last = state.get("fetched", 0)
     gap = every_min * 60
-    if not force and time.time() - last < gap and state.get("market") == market:
+    watched = watched_ids()
+    same = state.get("market") == market
+    missing = new_watched_ids(state, watched) if same else []
+    policy_stale = same and state.get("hist_policy") != HIST_POLICY
+    rewrite = bool(missing) or policy_stale
+    if not force and not rewrite and time.time() - last < gap and same:
         if state.get("every") != every_min:
             state["every"] = every_min
             save_state(state)
@@ -521,12 +561,12 @@ def update(cfg, force=False, every_min=DEFAULT_EVERY, api=None):
         sync_slots()
         return False
     api = api or Blizzard(cfg)
-    watched = watched_ids()
-    missing = new_watched_ids(state, watched) if state.get("market") == market else []
     if missing:
         print(f"Watch list has {len(missing)} new item(s) not in the last snapshot; "
               f"rewriting Feed.lua from the current auction house data.")
-    snap = fetch_snapshot(api, cfg, state, refresh=bool(missing))
+    elif policy_stale:
+        print("History export policy changed; rewriting Feed.lua from the current auction house data.")
+    snap = fetch_snapshot(api, cfg, state, refresh=bool(rewrite))
     if snap is None:
         state["fetched"], state["every"] = int(time.time()), every_min
         save_state(state)
@@ -573,7 +613,7 @@ def update(cfg, force=False, every_min=DEFAULT_EVERY, api=None):
     write_feed(market, cfg["faction"], market_label(cfg), auctions_url(cfg), updated, items, every_min, craft)
     state = {"source": "blizzard", "market": market, "fetched": int(time.time()), "updated": updated,
              "lm": snap["lm"] or formatdate(updated, usegmt=True), "items": new_state_items, "every": every_min,
-             "watched": sorted(watched)}
+             "watched": sorted(watched), "hist_policy": HIST_POLICY}
     save_state(state)
     on_lists = len(watched & set(items))
     extra = f" and {len(craft)} alchemy outputs (craft, not on the ticker)" if craft else ""
