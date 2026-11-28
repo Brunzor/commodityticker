@@ -20,7 +20,7 @@ CT.GRAPH_RANGE_DEFAULT = 14
 local DEFAULTS = {
   shown = true,
   locked = false,
-  auto = true,          -- refresh watch-list + tracked prices automatically while the AH is open
+  auto = true,          -- unused since 2.9.0 (kept so old saved settings still load); live AH scanning was removed
   interval = 5,         -- minutes between automatic AH refreshes (while the AH is open)
   mode = "scroll",      -- "scroll", "rotate" or "list" (2.4: static list with icons, sparklines, counts)
   listWidth = 0,        -- list mode width; 0 = packed to fit (automatic)
@@ -35,7 +35,7 @@ local DEFAULTS = {
   staleHours = 6,       -- prices older than this are drawn grey
   lists = { now = true, later = false }, -- legacy (2.1 and older); 2.2 uses sources per ticker
   extra = {},           -- [itemID] = name, added with /commodity add
-  tracked = {},         -- [itemID] = name, tracked live with /commodity track
+  tracked = {},         -- [itemID] = name, kept on the ticker with /commodity track
   removed = {},         -- [itemID] = true, hidden defaults
   useFeed = true,       -- read Feed.lua written by tools/update_feed.py
   trendIcons = true,    -- 2.4.5: large ^ / v / = (the game font has no triangle glyphs)
@@ -43,7 +43,7 @@ local DEFAULTS = {
   graphRange = 14,     -- lookup graph time window in days (1, 3, 7, 14 or 30)
   point = { "TOP", "TOP", 0, -95 }, -- below the top-centre HUD widgets, above error text and zone text
 }
-CT.VERSION = "2.8.10"
+CT.VERSION = "2.9.0"
 CT.DEFAULT_POINT = { "TOP", "TOP", 0, -95 }
 CT.OLD_DEFAULT_POINT = { "TOP", "TOP", 0, -4 }  -- 2.0.0 and HerbTicker: covered top-of-screen text
 
@@ -582,7 +582,8 @@ function CT:AddPoint(id, t, price, qty, src)
     h[#h + 1] = { t = t, p = price, q = qty, s = src }
     if last and last.t > t then table.sort(h, function(a, b) return a.t < b.t end) end
   end
-  trimHistory(h, time())
+  -- 2.9.0: do not downsample here. trimHistory runs at login, logout, and after a
+  -- batched Auctionator import, so posting auctions does not hitch on every point.
 end
 
 -- Feed history points for one item (from the compact "h" string the script writes).
@@ -607,12 +608,23 @@ end
 
 -- Copy the loaded feed's points into saved history for items you watch or track,
 -- so they outlive the feed file's short window.
-function CT:MergeFeedHistory()
-  local hist = self:Market().hist
-  for id, h in pairs(hist) do
-    trimHistory(h, time())
-    if #h == 0 then hist[id] = nil end
+function CT:TrimAllHistory()
+  if not (self.db and self.db.markets) then return end
+  local now = time()
+  for _, m in pairs(self.db.markets) do
+    if type(m) == "table" and type(m.hist) == "table" then
+      for id, h in pairs(m.hist) do
+        if type(h) == "table" then
+          trimHistory(h, now)
+          if #h == 0 then m.hist[id] = nil end
+        end
+      end
+    end
   end
+end
+
+function CT:MergeFeedHistory()
+  self:TrimAllHistory()
   if not self:Feed() then return end
   for _, e in ipairs(self:Watched()) do
     for _, p in ipairs(self:FeedPoints(e.id)) do self:AddPoint(e.id, p.t, p.p, p.q, "feed") end
@@ -704,18 +716,15 @@ function CT:MarkNoneListed(id)
   self.dirty = true
 end
 
--- Best current view of an item: newest of own AH data, the feed file, or Auctionator.
--- Guild prices only fill a gap; they never replace a price you already have.
--- When our own AH auto-refresh is off, prices already scanned by TSM or
--- Auctionator are used first (never invented); if those addons are missing
--- or have no figure, we fall back to the usual own / feed / Auctionator path.
+-- Best current view of an item: newest of recorded prices (including Auctionator
+-- imports), the feed file, or a live Auctionator/TSM API read. Guild prices only
+-- fill a gap; they never replace a price you already have. CommodityTicker no
+-- longer queries the auction house itself (2.9.0).
+function CT:UseAuctionator()
+  return self.db and self.db.settings and self.db.settings.useAuctionator ~= false
+end
+
 function CT:Quote(id)
-  if self.db and self.db.settings and self.db.settings.auto == false then
-    local addon = self:AddonScanPrice(id)
-    if addon and addon.price then
-      return addon
-    end
-  end
   local own, guild
   local o = self:Market().items[id]
   if o and o.p then
@@ -726,6 +735,10 @@ function CT:Quote(id)
   end
 
   local best = own
+  local function newer(t)
+    return not best or not best.t or (t or 0) > best.t
+  end
+
   local feed = self:Feed()
   if feed then
     local f = feed.items[id]
@@ -737,7 +750,24 @@ function CT:Quote(id)
     end
   end
 
-  -- Fill in only when you have no usable own or feed price.
+  if self:UseAuctionator() then
+    local a = self:AuctionatorPrice(id)
+    if a and a.price then
+      if a.t and newer(a.t) then
+        best = a
+      elseif not a.t and (not best or not best.price or best.none) then
+        a.t = time()
+        best = a
+      end
+    end
+  end
+
+  if (not best or not best.price) then
+    local tsm = self:TSMPrice(id)
+    if tsm and tsm.price then best = tsm end
+  end
+
+  -- Fill in only when you have no usable own, feed or Auctionator price.
   if guild and guild.price then
     if not best or (best.none and not best.price) then
       best = guild
@@ -747,10 +777,6 @@ function CT:Quote(id)
   if best and best.none and not best.price and feed and feed.items[id] then
     best.price = feed.items[id].min -- "none listed" now; show the feed's older price as "last"
   end
-  if not best or not best.price then
-    local a = self:AuctionatorPrice(id)
-    if a then best = a end
-  end
   return best
 end
 
@@ -758,7 +784,7 @@ function CT:QuoteLine(id)
   local name = self:ItemName(id)
   local q = self:Quote(id)
   if not q or (not q.price and not q.none) then
-    return name .. ": no price data yet (open the AH, or run the feed updater and /reload)."
+    return name .. ": no price data yet (use the auction house with Auctionator, or run the feed updater and /reload)."
   end
   if q.none then
     return format("%s: none listed (%s, %s)%s", name, CT.SourceLabel(q.src), CT.Ago(q.t),
@@ -986,7 +1012,7 @@ function CT:TSMPrice(id)
 end
 
 function CT:AuctionatorPrice(id)
-  if not (self.db and self.db.settings and self.db.settings.useAuctionator) then return nil end
+  if not self:UseAuctionator() then return nil end
   local api = _G.Auctionator and Auctionator.API and Auctionator.API.v1
   if not api or not api.GetAuctionPriceByItemID then return nil end
   local ok, price = pcall(api.GetAuctionPriceByItemID, "CommodityTicker", id)
@@ -999,7 +1025,7 @@ function CT:AuctionatorPrice(id)
   return { price = price, t = t, src = "auctionator" }
 end
 
--- Order when our own AH scanning is off: TSM, then Auctionator.
+-- Cheap fallback used by older callers: TSM, then Auctionator.
 -- Each call is feature-detected and pcall'd; missing addons return nil.
 function CT:AddonScanPrice(id)
   return self:TSMPrice(id) or self:AuctionatorPrice(id)
@@ -1315,202 +1341,84 @@ end
 
 
 ------------------------------------------------------------------------
--- Auction house refresh and lookup (same guards for both)
+-- Auctionator import (2.9.0)
+-- CommodityTicker no longer queries the auction house. It reads prices
+-- Auctionator already has, lazily, never from inside an AH event.
 ------------------------------------------------------------------------
-local SORTS = {
-  { sortOrder = (Enum and Enum.AuctionHouseSortOrder and Enum.AuctionHouseSortOrder.Price) or 0, reverseSort = false },
-}
+CT.IMPORT_BATCH = 8
 
-local function sellBoxBusy()
-  local ok, busy = pcall(function()
-    local ahf = _G.AuctionHouseFrame
-    if not ahf or not ahf:IsShown() then return false end
-    for _, name in ipairs({ "ItemSellFrame", "CommoditiesSellFrame" }) do
-      local sf = ahf[name]
-      if sf and sf:IsShown() and sf.GetItem and sf:GetItem() then return true end
-    end
-    return false
-  end)
-  return ok and busy
-end
-
-function CT:CanQuery()
-  if not self.ahOpen then return false, "open the auction house first (live prices only come from the AH)." end
-  if not (C_AuctionHouse and C_AuctionHouse.SearchForItemKeys and C_AuctionHouse.MakeItemKey) then
-    return false, "this client has no C_AuctionHouse.SearchForItemKeys."
-  end
-  if C_AuctionHouse.IsThrottledMessageSystemReady and not C_AuctionHouse.IsThrottledMessageSystemReady() then
-    return false, "the auction house is busy; try again in a moment."
-  end
-  if sellBoxBusy() then return false, "an item is in the Sell box; not interrupting." end
-  return true
-end
-
-function CT:SendScanQuery()
-  local scan = self.scan
-  if not scan then return end
-  local keys = {}
-  for id in pairs(scan.ids) do
-    if not scan.got[id] then keys[#keys + 1] = C_AuctionHouse.MakeItemKey(id) end
-  end
-  if #keys == 0 then return self:FinishScan() end
-  scan.sentAt = GetTime()
-  scan.answered = false
-  self.ourQueryAt = GetTime()
-  C_AuctionHouse.SearchForItemKeys(keys, SORTS)
-  local token, attempt = scan.token, scan.attempt
-  -- Safety net: finish (or retry) if the server never answers.
-  C_Timer.After(8, function()
-    if self.scan and self.scan.token == token and self.scan.attempt == attempt and not self.scan.answered then
-      self:CheckScan()
-    end
+function CT:ScheduleAuctionatorImport(reason)
+  if self.importPending or self.importQueue then return end
+  self.importPending = true
+  C_Timer.After(0.15, function()
+    self.importPending = false
+    self:StartAuctionatorImport(reason)
   end)
 end
 
--- kind "refresh": watch list + tracked items. kind "lookup": one item.
-function CT:StartScan(manual, ids, kind)
-  kind = kind or "refresh"
-  if self.scan then
-    if manual and kind == "refresh" then CT.Print("a refresh is already running; try again in a few seconds.") end
-    return false, "a refresh is already running"
-  end
-  local ok, why = self:CanQuery()
-  if not ok then
-    if manual and kind == "refresh" then CT.Print("can't refresh: " .. why) end
-    return false, why
-  end
-  local count = 0
-  if not ids then
-    ids = {}
-    for _, e in ipairs(self:Watched()) do ids[e.id] = true end
-  end
-  for _ in pairs(ids) do count = count + 1 end
-  if count == 0 then
-    if manual then CT.Print("watch list is empty.") end
-    return false, "nothing to refresh"
-  end
-  self.scanToken = (self.scanToken or 0) + 1
-  self.scan = { ids = ids, got = {}, attempt = 1, manual = manual, token = self.scanToken, count = count, kind = kind }
-  self:SendScanQuery()
-  self:Refresh()
+function CT:ImportAuctionatorItem(id)
+  if not id or not self:UseAuctionator() then return false end
+  local a = self:AuctionatorPrice(id)
+  if not (a and a.price) then return false end
+  self:Record(id, a.price, a.qty, "auctionator", a.t)
   return true
 end
 
--- Forever's first SearchForItemKeys often returns every row as "None available"
--- (see ForeverPlusPlus docs), so resend up to 3 times.
-function CT:CheckScan()
-  local scan = self.scan
-  if not scan then return end
-  if not self.ahOpen then self.scan = nil; return end
-  local missing = 0
-  for id in pairs(scan.ids) do if not scan.got[id] then missing = missing + 1 end end
-  if missing > 0 and scan.attempt < 3 then
-    scan.attempt = scan.attempt + 1
-    local token = scan.token
-    C_Timer.After(1.5, function()
-      if not (self.scan and self.scan.token == token) then return end
-      local ok = self:CanQuery()
-      if ok then self:SendScanQuery() else self:FinishScan() end
-    end)
+function CT:StartAuctionatorImport(reason)
+  if self.importQueue or not self:UseAuctionator() then return end
+  local ids = {}
+  for _, e in ipairs(self:Watched()) do ids[#ids + 1] = e.id end
+  if #ids == 0 then return end
+  self.importQueue = ids
+  self.importIndex = 1
+  self.importReason = reason
+  self:ImportAuctionatorSlice()
+end
+
+function CT:ImportAuctionatorSlice()
+  local ids = self.importQueue
+  if not ids then return end
+  local n, budget = 0, CT.IMPORT_BATCH
+  while self.importIndex <= #ids and n < budget do
+    self:ImportAuctionatorItem(ids[self.importIndex])
+    self.importIndex = self.importIndex + 1
+    n = n + 1
+  end
+  if self.importIndex <= #ids then
+    C_Timer.After(0, function() self:ImportAuctionatorSlice() end)
     return
   end
-  self:FinishScan()
-end
-
-function CT:FinishScan()
-  local scan = self.scan
-  if not scan then return end
-  self.scan = nil
-  local got, none = 0, 0
-  for id in pairs(scan.ids) do
-    if scan.got[id] then got = got + 1 else none = none + 1; self:MarkNoneListed(id) end
-  end
-  if scan.kind == "refresh" then
-    self:Market().lastScan = time()
-    if scan.manual then CT.Print(format("refreshed %d prices; %d not listed right now.", got, none)) end
-  elseif scan.kind == "lookup" then
-    for id in pairs(scan.ids) do CT.Print(self:QuoteLine(id)) end
-  end
-  if got > 0 then self:ShareScan(scan.got) end
-  self:Refresh()
-  local pending = self.pendingLookup
-  self.pendingLookup = nil
-  if pending and self.ahOpen then
-    C_Timer.After(1, function()
-      if self.ahOpen and not self.scan and self:StartScan(true, { [pending] = true }, "lookup") and ns.Lookup then
-        ns.Lookup:ShowItem(pending, "Checking the auction house...")
-      end
-    end)
-  end
-end
-
-function CT:Wants(id)
-  if not id then return false end
-  if self.scan and self.scan.ids[id] then return true end
-  if self.lookupID == id then return true end
-  return self:IsWatched(id) and true or false
-end
-
-function CT:ReadBrowseResults(results)
-  if type(results) ~= "table" then return end
-  local scan = self.scan
-  local ours = scan and self.ourQueryAt and GetTime() - self.ourQueryAt < 10
-  local src = ours and ((scan.kind == "lookup") and "lookup" or "scan") or "browse"
-  local any = false
-  for _, r in ipairs(results) do
-    local id = r.itemKey and r.itemKey.itemID
-    if id and self:Wants(id) and (r.totalQuantity or 0) > 0 and (r.minPrice or 0) > 0 then
-      self:Record(id, r.minPrice, r.totalQuantity, src)
-      if scan and scan.ids[id] then scan.got[id] = true end
-      any = true
-    end
-  end
-  if any then self:Refresh() end
-  if ours then scan.answered = true end
-  if ours and not self.checkPending then
-    self.checkPending = true
-    C_Timer.After(1, function() self.checkPending = false; self:CheckScan() end)
-  end
-end
-
-function CT:ReadCommodityResults(itemID)
-  if not itemID or not self:Wants(itemID) then return end
-  local ok, info = pcall(C_AuctionHouse.GetCommoditySearchResultInfo, itemID, 1)
-  if not ok or type(info) ~= "table" or not info.unitPrice then return end
-  local qty
-  if C_AuctionHouse.GetCommoditySearchResultsQuantity then
-    local ok2, q = pcall(C_AuctionHouse.GetCommoditySearchResultsQuantity, itemID)
-    if ok2 then qty = q end
-  end
-  self:Record(itemID, info.unitPrice, qty, "search")
-  self:ShareScan({ [itemID] = true })
+  self.importQueue, self.importIndex, self.importReason = nil, nil, nil
+  self:TrimAllHistory()
   self:Refresh()
 end
 
--- Turn our own AH auto-refresh on or off. The settings checkbox, the AH badge
--- on the ticker, and /commodity auto all call this so they stay in sync and
--- print the new state. Automatic queries (on AH open, and the 15s AutoTick)
--- honour this; a manual /commodity scan or middle-click still runs.
-function CT:SetAuto(on)
+-- Kept so old slash commands and clicks still do something useful: they
+-- pull Auctionator prices, and they never send an AH query.
+function CT:StartScan(manual)
+  if manual then
+    CT.Print("CommodityTicker no longer queries the auction house. Refreshing prices from Auctionator and the feed.")
+  end
+  self:ScheduleAuctionatorImport("scan")
+  return false, "no longer queries the auction house"
+end
+
+function CT:SetUseAuctionator(on)
   local s = self.db and self.db.settings
   if not s then return end
-  s.auto = on and true or false
-  CT.Print("auto-refresh at the AH " .. (s.auto and "|cff20ff20on|r" or "|cffff4040off|r"))
+  s.useAuctionator = on and true or false
+  CT.Print("Auctionator prices " .. (s.useAuctionator and "|cff20ff20on|r" or "|cffff4040off|r"))
   self:Refresh()
 end
 
-function CT:AutoTick()
-  if not (self.ahOpen and self.db.settings.auto) or self.scan then return end
-  local interval = max(1, self.db.settings.interval) * 60
-  if time() - (self:Market().lastScan or 0) < interval then return end
-  -- Don't overwrite a list the player is looking at: wait 45s after their own searches.
-  if self.userQueryAt and GetTime() - self.userQueryAt < 45 then return end
-  self:StartScan(false)
+-- /commodity auto used to toggle live AH scanning. That path is gone; the
+-- command now turns Auctionator prices on or off so old macros keep working.
+function CT:SetAuto(on)
+  self:SetUseAuctionator(on)
 end
 
 function CT:NextAutoIn()
-  local interval = max(1, self.db.settings.interval) * 60
-  return max(0, interval - (time() - (self:Market().lastScan or 0)))
+  return 0
 end
 
 ------------------------------------------------------------------------
@@ -1526,7 +1434,7 @@ function CT:CheckedItem(text, verb)
   return id, nameOrErr
 end
 
--- One-off price check. Live at the AH when allowed, otherwise best known data.
+-- One-off price check from the feed and Auctionator. Never queries the AH.
 function CT:Lookup(text, quiet)
   local id, nameOrErr = self:CheckedItem(text, "look up")
   if not id then
@@ -1535,26 +1443,13 @@ function CT:Lookup(text, quiet)
     return nil
   end
   self.lookupID = id
-  local live, why = false, nil
-  if self.ahOpen then
-    live, why = self:StartScan(true, { [id] = true }, "lookup")
-    if not live and self.scan then
-      -- A refresh is running: check this item right after it, instead of refusing.
-      self.pendingLookup = id
-      if not quiet then CT.Print(self:QuoteLine(id) .. " (checking the AH after the current refresh...)") end
-      if ns.Lookup then ns.Lookup:ShowItem(id, "Checking the auction house after the current refresh...") end
-      return id, true
-    end
+  local pulled = self:ImportAuctionatorItem(id)
+  local line = self:QuoteLine(id)
+  if not quiet then CT.Print(line) end
+  if ns.Lookup then
+    ns.Lookup:ShowItem(id, pulled and "Updated from Auctionator." or nil)
   end
-  if not live then
-    local line = self:QuoteLine(id)
-    if self.ahOpen and why then line = line .. " (AH not queried: " .. why .. ")" end
-    if not quiet then CT.Print(line) end
-  else
-    if not quiet then CT.Print("checking " .. nameOrErr .. " at the auction house...") end
-  end
-  if ns.Lookup then ns.Lookup:ShowItem(id, live and "Checking the auction house..." or (self.ahOpen and why and ("AH not queried: " .. why)) or nil) end
-  return id, live
+  return id, false
 end
 
 function CT:Track(text)
@@ -1563,8 +1458,7 @@ function CT:Track(text)
   local name = self:ItemName(id, nameOrErr)
   self.db.settings.tracked[id] = name
   if self.db.settings.removed then self.db.settings.removed[id] = nil end -- tracking it again brings it back
-  CT.Print(format("tracking %s live: it's refreshed with every AH refresh (every %d min while the AH is open). With the AH closed it shows the feed.",
-    name, self.db.settings.interval))
+  CT.Print(format("tracking %s: it stays on the ticker and picks up Auctionator and feed prices.", name))
   self:Refresh()
   return id
 end
@@ -1694,20 +1588,10 @@ end
 ------------------------------------------------------------------------
 local ev = CreateFrame("Frame")
 CT.eventFrame = ev
-for _, e in ipairs({ "ADDON_LOADED", "PLAYER_LOGIN", "AUCTION_HOUSE_SHOW", "AUCTION_HOUSE_CLOSED",
-  "AUCTION_HOUSE_BROWSE_RESULTS_UPDATED", "AUCTION_HOUSE_BROWSE_RESULTS_ADDED",
-  "COMMODITY_SEARCH_RESULTS_UPDATED", "PLAYER_REGEN_DISABLED", "PLAYER_REGEN_ENABLED", "GET_ITEM_INFO_RECEIVED" }) do
+for _, e in ipairs({ "ADDON_LOADED", "PLAYER_LOGIN", "PLAYER_LOGOUT",
+  "AUCTION_HOUSE_SHOW", "AUCTION_HOUSE_CLOSED",
+  "PLAYER_REGEN_DISABLED", "PLAYER_REGEN_ENABLED", "GET_ITEM_INFO_RECEIVED" }) do
   ev:RegisterEvent(e)
-end
-
-local function hookUserQueries()
-  if CT.hooked or not C_AuctionHouse or not hooksecurefunc then return end
-  CT.hooked = true
-  for _, fn in ipairs({ "SendBrowseQuery", "SendSearchQuery", "SearchForFavorites", "RequestMoreBrowseResults" }) do
-    if C_AuctionHouse[fn] then
-      hooksecurefunc(C_AuctionHouse, fn, function() CT.userQueryAt = GetTime() end)
-    end
-  end
 end
 
 ev:SetScript("OnEvent", function(_, event, ...)
@@ -1715,7 +1599,6 @@ ev:SetScript("OnEvent", function(_, event, ...)
     if ... ~= ADDON then return end
     CT.justMigrated = CT:InitDB()
   elseif event == "PLAYER_LOGIN" then
-    hookUserQueries()
     CT:RetireHerbTicker()
     if CT.justMigrated then
       CT.Print("imported your HerbTicker settings, bar position, lists and prices. Commands are now /commodity (old /herbticker still works).")
@@ -1724,25 +1607,22 @@ ev:SetScript("OnEvent", function(_, event, ...)
     CT:MergeFeedHistory()
     CT:RegisterShare()
     if ns.UI then ns.UI:Init() end
-    C_Timer.NewTicker(15, function() CT:AutoTick() end)
     C_Timer.NewTicker(20, function() CT:Refresh() end) -- keeps ages ("5m", "2h") current
     C_Timer.After(8, function() CT:ShareSnapshot() end)
+    C_Timer.After(1, function() CT:ScheduleAuctionatorImport("login") end)
+  elseif event == "PLAYER_LOGOUT" then
+    CT:TrimAllHistory()
   elseif event == "AUCTION_HOUSE_SHOW" then
     CT.ahOpen = true
-    hookUserQueries()
-    C_Timer.After(2.5, function() CT:AutoTick() end)
     CT:Refresh()
   elseif event == "AUCTION_HOUSE_CLOSED" then
     CT.ahOpen = false
-    CT.scan = nil -- closed mid-refresh: keep what arrived, don't mark the rest "none listed"
+    CT.scan = nil
     CT.pendingLookup = nil
+    -- Auctionator has finished writing; import watched prices on a delay, never
+    -- inside the close event or any search event.
+    CT:ScheduleAuctionatorImport("close")
     CT:Refresh()
-  elseif event == "AUCTION_HOUSE_BROWSE_RESULTS_UPDATED" then
-    if C_AuctionHouse and C_AuctionHouse.GetBrowseResults then
-      CT:ReadBrowseResults(C_AuctionHouse.GetBrowseResults())
-    end
-  elseif event == "AUCTION_HOUSE_BROWSE_RESULTS_ADDED" then
-    CT:ReadBrowseResults((...))
   elseif event == "GET_ITEM_INFO_RECEIVED" then
     -- A name just arrived from the server: the ticker text gets longer, so lay it out again.
     local id = ...
@@ -1758,8 +1638,6 @@ ev:SetScript("OnEvent", function(_, event, ...)
       CT.Print("combat over - click Load feed or Reload on the ticker (or /commodity loadfeed) to re-read the feed.")
     end
     CT:Refresh()
-  elseif event == "COMMODITY_SEARCH_RESULTS_UPDATED" then
-    CT:ReadCommodityResults((...))
   elseif event == "CHAT_MSG_ADDON" then
     CT:OnAddonMessage(...)
   elseif event == "PLAYER_GUILD_UPDATE" then
@@ -1784,10 +1662,10 @@ end
 local HELP = {
   "/commodity  (or /ct) - show this help. Commodities only: herbs, ore, bars, stone, leather, cloth, reagents, trade goods.",
   "/commodity settings  (or config, or right-click a ticker) - the settings window: tickers, lists, professions, look",
-  "/commodity lookup <name, ID or shift-click>  (or /commodity l) - price check + graph; live if the AH is open",
+  "/commodity lookup <name, ID or shift-click>  (or /commodity l) - price check + graph (feed and Auctionator)",
   "/commodity graph <item>     - open the price-history graph for an item",
   "/commodity farm  (or farm list) - best farm right now: what you can gather, ranked by price x sell speed (estimate)",
-  "/commodity track <item> || untrack <item> || tracked - live-track items (refreshed while the AH is open)",
+  "/commodity track <item> || untrack <item> || tracked - keep items on the ticker (Auctionator + feed prices)",
   "Tickers: /commodity bars - list them; bar <n or name> - pick the ticker the commands below change; bar new <name>; bar rename <name>; bar delete",
   "/commodity add <item> || remove <item>  - put an item on / take it off the picked ticker",
   "/commodity list profession||now||later||both||custom (combine with +) - what the picked ticker shows; /commodity profs - your professions",
@@ -1797,9 +1675,9 @@ local HELP = {
   "/commodity rows <3-30>       - list mode: rows shown before it scrolls",
   "/commodity columns [icon|graph|price|trend|bag|bank|value] [on|off]  - show or hide list columns (name always stays)",
   "/commodity tickergraph on||off - show a mini price graph on the scrolling and rotating ticker",
-  "/commodity scan             - refresh now (auction house must be open)",
-  "/commodity auto on||off      - auto-refresh while the AH is open (off: use TSM or Auctionator scans if present, else the feed). Also the settings checkbox and the AH badge on the ticker",
-  "/commodity interval <min>   - minutes between auto-refreshes (1-120, default 5)",
+  "/commodity scan             - refresh watched prices from Auctionator (does not query the AH)",
+  "/commodity auto on||off      - use Auctionator prices (on by default). Also the settings checkbox and the AH badge on the ticker",
+  "/commodity interval <min>   - leftover command; live AH auto-refresh was removed in 2.9.0",
   "/commodity share on||off     - share your AH commodity prices with your guild (on by default, guild only)",
   "/commodity feed on||off      - use Feed.lua from tools/update_feed.py",
   "/commodity arrows on||off    - leftover command; trend is a colour-coded percent only (no ^ / v / - / =)",
@@ -1913,7 +1791,7 @@ function CT:Slash(msg)
     local names = {}
     for _, name in pairs(s.tracked) do names[#names + 1] = tostring(name) end
     table.sort(names)
-    CT.Print(#names > 0 and ("tracked live: " .. table.concat(names, ", ")) or "nothing tracked. /commodity track <item>")
+    CT.Print(#names > 0 and ("tracked: " .. table.concat(names, ", ")) or "nothing tracked. /commodity track <item>")
   elseif cmd == "editmode" or cmd == "edit" then
     CT.Print(ns.EditMode and ns.EditMode:Status() or "Edit Mode support isn't loaded.")
   elseif cmd == "version" then CT.Print("version " .. CT.VERSION)
@@ -1924,14 +1802,17 @@ function CT:Slash(msg)
   elseif cmd == "unlock" then c.locked = false; CT:Refresh(); CT.Print("unlocked - drag to move, or drag the list edges to resize.")
   elseif cmd == "scan" or cmd == "refresh" then self:StartScan(true)
   elseif cmd == "auto" then
-    if rest == "on" then self:SetAuto(true)
-    elseif rest == "off" then self:SetAuto(false)
-    else self:SetAuto(not s.auto) end
+    if rest == "" then
+      CT.Print("live AH scanning was removed in 2.9.0. /commodity auto now turns Auctionator prices on or off.")
+    end
+    if rest == "on" then self:SetUseAuctionator(true)
+    elseif rest == "off" then self:SetUseAuctionator(false)
+    else self:SetUseAuctionator(not self:UseAuctionator()) end
   elseif cmd == "interval" then
     local n = tonumber(rest)
     if n and n >= 1 and n <= 120 then
       s.interval = n
-      CT.Print(format("auto-refresh every %d min while the AH is open.", n))
+      CT.Print(format("interval saved as %d min (live AH auto-refresh was removed in 2.9.0).", n))
     else
       CT.Print("interval must be 1-120 minutes (current " .. s.interval .. ").")
     end
@@ -2015,9 +1896,8 @@ function CT:Slash(msg)
     local m = self:Market()
     local nt = 0
     for _ in pairs(s.tracked) do nt = nt + 1 end
-    CT.Print(format("market %s - last AH refresh %s - auto %s every %d min - AH %s - %d tracked",
-      self:MarketKey(), m.lastScan > 0 and CT.Ago(m.lastScan) or "never", onOff(s.auto), s.interval,
-      self.ahOpen and "open" or "closed", nt))
+    CT.Print(format("market %s - Auctionator %s - AH %s - %d tracked",
+      self:MarketKey(), onOff(s.useAuctionator ~= false), self.ahOpen and "open" or "closed", nt))
     CT.Print(self:ShareStatus())
   elseif cmd == "prices" then
     for _, e in ipairs(self:Watched()) do CT.Print(self:QuoteLine(e.id)) end

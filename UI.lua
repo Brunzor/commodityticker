@@ -123,8 +123,8 @@ local function newBar(index)
   label:SetText(index == 1 and "|cff33ff99CT|r" or ("|cff33ff99CT|r|cff9d9d9d" .. index .. "|r"))
   self.label = label
 
-  -- Coloured AH badge: green when we scan the AH ourselves, orange when we
-  -- read TSM / Auctionator / the feed. Click to toggle (same as /commodity auto).
+  -- Coloured AH badge: green when Auctionator prices are on, orange when they
+  -- are off (feed only). Click to toggle (same as /commodity auto).
   local ahBtn = CreateFrame("Button", nil, f)
   ahBtn:SetSize(AH_W, 16)
   ahBtn:SetPoint("RIGHT", f, "RIGHT", -PAD, 0)
@@ -136,19 +136,19 @@ local function newBar(index)
   ahLabel:SetJustifyH("RIGHT")
   ahBtn.label = ahLabel
   ahBtn:SetScript("OnClick", function()
-    CT:SetAuto(not (CT.db and CT.db.settings and CT.db.settings.auto))
+    CT:SetUseAuctionator(not (CT.db and CT.db.settings and CT:UseAuctionator()))
   end)
   ahBtn:SetScript("OnEnter", function(btn)
     if GameTooltip then
       GameTooltip:SetOwner(btn, "ANCHOR_TOP")
       GameTooltip:ClearLines()
-      local on = CT.db and CT.db.settings and CT.db.settings.auto
+      local on = CT:UseAuctionator()
       if on then
-        GameTooltip:AddLine("AH scanning is on")
-        GameTooltip:AddLine("Click to turn it off and use prices from TSM, Auctionator or the feed. Also /commodity auto off.", 0.82, 0.78, 0.68, true)
+        GameTooltip:AddLine("Auctionator prices are on")
+        GameTooltip:AddLine("CommodityTicker reads prices Auctionator already has; it does not query the AH. Click to use the feed only. Also /commodity auto off.", 0.82, 0.78, 0.68, true)
       else
-        GameTooltip:AddLine("AH scanning is off")
-        GameTooltip:AddLine("Prices come from TSM, Auctionator or the feed. Click to scan the AH myself while it is open. Also /commodity auto on.", 0.82, 0.78, 0.68, true)
+        GameTooltip:AddLine("Auctionator prices are off")
+        GameTooltip:AddLine("Prices come from the feed. Click to use Auctionator prices too. Also /commodity auto on.", 0.82, 0.78, 0.68, true)
       end
       GameTooltip:Show()
     end
@@ -209,7 +209,7 @@ local function newBar(index)
       CT:SetTargetBar(self.index)
       if ns.Settings then ns.Settings:Open(self.index) end
     elseif button == "MiddleButton" then
-      CT:StartScan(true)
+      CT:ScheduleAuctionatorImport("middle")
     elseif button == "LeftButton" and not self.dragged then
       local e = self:HoveredItem()
       if e and ns.Lookup then CT:SetTargetBar(self.index); CT.lookupID = e.id; ns.Lookup:ShowItem(e.id) end
@@ -281,7 +281,7 @@ function UI:ShowHoverPanel(e, bar)
   p:ClearAllPoints()
   p:SetPoint("TOP", (bar or self.bars[1]).frame, "BOTTOM", 0, -2)
   -- Title keeps the name: the panel sits under the bar, and a scrolling tape has many items.
-  p.title:SetText((e.tracked and "|cff66ccff[live] |r" or "") .. CT:ItemName(e.id, e.name))
+  p.title:SetText((e.tracked and "|cff66ccff[tracked] |r" or "") .. CT:ItemName(e.id, e.name))
   local mode = bar and bar:Cfg() and bar:Cfg().mode
   local countsOn = mode == "rotate" and bar.rotCounts and bar.rotCounts.shown
   local x = UI.ItemExtras(e, { name = true, price = true, trend = true, bag = countsOn, bank = countsOn, value = countsOn })
@@ -749,7 +749,7 @@ function Bar:CreateListRow(i)
       CT:SetTargetBar(self.index)
       if ns.Settings then ns.Settings:Open(self.index) end
     elseif button == "MiddleButton" then
-      CT:StartScan(true)
+      CT:ScheduleAuctionatorImport("middle")
     elseif button == "LeftButton" and not self.dragged and row.entry and ns.Lookup then
       CT:SetTargetBar(self.index); CT.lookupID = row.entry.id; ns.Lookup:ShowItem(row.entry.id)
     end
@@ -1328,10 +1328,10 @@ function Bar:SetListLayout(on)
   self:SyncListResize()
 end
 
--- Colour of the AH badge follows settings.auto. Always visible so it can be
+-- Colour of the AH badge follows useAuctionator. Always visible so it can be
 -- clicked even when the auction house is closed.
 function Bar:UpdateAutoBadge()
-  local on = CT.db and CT.db.settings and CT.db.settings.auto
+  local on = CT:UseAuctionator()
   local label = self.ahBtn and self.ahBtn.label
   if not label then return end
   if on then
@@ -1561,15 +1561,10 @@ function Bar:ShowTooltip()
   end
   local m = CT:Market()
   tt:AddLine(" ")
-  if CT.ahOpen then
-    if CT.db.settings.auto then
-      tt:AddLine(format("AH open: live refresh every %d min (next in %ds). Click the AH badge to turn it off.", CT.db.settings.interval, CT:NextAutoIn()), 0.6, 1, 0.6)
-    else
-      tt:AddLine("AH open: auto-refresh is off. Prices come from TSM, Auctionator or the feed. Click the AH badge to turn it on.", 1, 0.6, 0.2, true)
-    end
+  if CT:UseAuctionator() then
+    tt:AddLine("Prices come from the feed and Auctionator. CommodityTicker does not query the auction house.", 0.6, 1, 0.6, true)
   else
-    tt:AddLine(format("Last AH refresh: %s. Live prices only update while the AH is open.",
-      m.lastScan > 0 and CT.Ago(m.lastScan) or "never"), 0.8, 0.8, 0.8, true)
+    tt:AddLine("Auctionator prices are off. Prices come from the feed. Click the AH badge to turn Auctionator on.", 1, 0.6, 0.2, true)
   end
   local feed = CT:Feed()
   if feed then
@@ -1578,8 +1573,8 @@ function Bar:ShowTooltip()
       tt:AddLine("A newer feed may be on disk if update_feed is running: click Load feed (or /commodity loadfeed).", 1, 0.6, 0.2, true)
     end
   end
-  tt:AddLine("Hover an item for its graph. Click an item: full graph. > = tracked live.", 0.6, 0.6, 0.6, true)
-  tt:AddLine("Right-click: settings (lists, tickers, look) - Middle-click: refresh at AH - Drag list edges to resize, or Esc > Edit Mode", 0.6, 0.6, 0.6, true)
+  tt:AddLine("Hover an item for its graph. Click an item: full graph. > = tracked.", 0.6, 0.6, 0.6, true)
+  tt:AddLine("Right-click: settings (lists, tickers, look) - Middle-click: refresh from Auctionator - Drag list edges to resize, or Esc > Edit Mode", 0.6, 0.6, 0.6, true)
   tt:Show()
 end
 function UI:ShowTooltip() (self.hoverBar or self.bars[1]):ShowTooltip() end

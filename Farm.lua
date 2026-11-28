@@ -67,18 +67,30 @@ function CT:FarmCandidates(tierOnly)
   return out
 end
 
--- Current unit price from the feed or your own AH scans only (newest wins). Never guild or
--- Auctionator, never the web. nil = not priced.
+-- Current unit price from the feed, recorded AH/Auctionator prices, or a live
+-- Auctionator read (newest wins). Never guild, never the web. nil = not priced.
 function CT:FarmPrice(id)
   local best
   local o = self:Market().items[id]
-  if o and o.p and o.p > 0 and CT.AH_SOURCES[o.src] and not o.none then
-    best = { price = o.p, t = o.t, src = o.src, qty = o.q }
+  if o and o.p and o.p > 0 and not o.none then
+    if CT.AH_SOURCES[o.src] or (o.src == "auctionator" and self:UseAuctionator()) then
+      best = { price = o.p, t = o.t, src = o.src, qty = o.q }
+    end
   end
   local feed = self:Feed()
   local f = feed and feed.items[id]
   if f and f.min and f.min > 0 and (f.qty == nil or f.qty > 0) and (not best or (feed.updated or 0) > (best.t or 0)) then
     best = { price = f.min, t = feed.updated, src = "feed", qty = f.qty }
+  end
+  if self:UseAuctionator() then
+    local a = self:AuctionatorPrice(id)
+    if a and a.price and a.price > 0 then
+      if a.t and (not best or a.t > (best.t or 0)) then
+        best = { price = a.price, t = a.t, src = "auctionator", qty = a.qty }
+      elseif not a.t and not best then
+        best = { price = a.price, t = time(), src = "auctionator", qty = a.qty }
+      end
+    end
   end
   return best
 end
@@ -442,6 +454,7 @@ function Farm:Open()
   self:Create()
   self.frame:Show()
   if self.frame.Raise then self.frame:Raise() end
+  CT:ScheduleAuctionatorImport("farm")
   self:Update()
 end
 

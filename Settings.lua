@@ -308,9 +308,9 @@ function S:Create()
   self.addBtn = button(f, "Add commodity", 110)
   self.addBtn:SetPoint("LEFT", ab, "RIGHT", 6, 0)
   self.addBtn:SetScript("OnClick", function() S:AddTyped() end)
-  self.autoCB = check(f, "Scan the AH myself (off = use TSM/Auctionator/feed)", function(v)
+  self.autoCB = check(f, "Use Auctionator prices (off = feed only)", function(v)
     if S.updating then return end
-    CT:SetAuto(v and true or false)
+    CT:SetUseAuctionator(v and true or false)
   end)
   self.autoCB:SetPoint("BOTTOMLEFT", 14, 72)
   self.autoCB.label:SetWidth(226)
@@ -343,6 +343,7 @@ function S:Open(i)
   self.frame:Show()
   if self.frame.Raise then self.frame:Raise() end
   self:Select(i or CT:TargetBar())
+  CT:ScheduleAuctionatorImport("settings")
 end
 
 function S:Select(i)
@@ -476,7 +477,7 @@ function S:Update()
     self.shareCB:SetChecked(CT.db.settings.sharePrices ~= false)
   end
   if self.autoCB then
-    self.autoCB:SetChecked(CT.db.settings.auto ~= false)
+    self.autoCB:SetChecked(CT:UseAuctionator())
   end
   local mode = MODE_HINT[c.mode] and c.mode or "scroll"
   self.modeBtn:SetText("Mode: " .. mode)

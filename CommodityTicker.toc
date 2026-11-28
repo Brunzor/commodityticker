@@ -2,7 +2,7 @@
 ## Title: CommodityTicker
 ## Notes: Stock-ticker style prices for commodities (herbs, ore, bars, cloth, leather, reagents) from your AH scans plus an optional Blizzard auction house feed file. Formerly HerbTicker.
 ## Author: Brett Malpas
-## Version: 2.8.10
+## Version: 2.9.0
 ## SavedVariables: CommodityTickerDB, HerbTickerDB
 ## OptionalDeps: Auctionator, TradeSkillMaster, HerbTicker
 ## IconTexture: Interface\Icons\INV_Misc_Herb_07

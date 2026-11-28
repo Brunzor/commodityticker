@@ -203,7 +203,7 @@ function Lookup:Create()
   f.rangeBtns = self.rangeBtns
 
   local btnW = math.floor((W - PAD * 2 - 16) / 3)
-  self.trackBtn = button(f, "Track live", btnW)
+  self.trackBtn = button(f, "Track", btnW)
   self.trackBtn:SetPoint("BOTTOMLEFT", PAD, 12)
   self.trackBtn:SetScript("OnClick", function()
     local id = self.id
@@ -233,7 +233,7 @@ function Lookup:Create()
     if CT:OnTicker(id) then CT:RemoveFromTicker(tostring(id)) else CT:AddToTicker(tostring(id)) end
     self:Update()
   end)
-  self.ahBtn = button(f, "Check AH now", btnW)
+  self.ahBtn = button(f, "Refresh price", btnW)
   self.ahBtn:SetPoint("LEFT", self.tickerBtn, "RIGHT", 8, 0)
   self.ahBtn:SetScript("OnClick", function() if self.id then CT:Lookup(tostring(self.id), true) end end)
   f.trackBtn, f.tickerBtn, f.ahBtn = self.trackBtn, self.tickerBtn, self.ahBtn
@@ -284,6 +284,7 @@ function Lookup:Open()
   if self.frame.Raise then self.frame:Raise() end
   if not self.id then self:ShowEmpty() end
   self.box:SetFocus()
+  CT:ScheduleAuctionatorImport("lookup")
 end
 
 function Lookup:ShowHead(hasItem)
@@ -349,7 +350,7 @@ function Lookup:ShowEmpty()
   self.name:SetText("Look up a commodity")
   self.price:SetText("")
   self:PlaceExtras(nil)
-  self.status:SetText(CT.ahOpen and "The auction house is open: lookups query it live." or "Auction house closed. Lookups use the feed and your last scan.")
+  self.status:SetText("Prices come from the feed and Auctionator. CommodityTicker does not query the auction house.")
   self:PaintRange()
   self.graph:SetSeries(nil)
   self.summary:SetText("")
@@ -381,7 +382,7 @@ function Lookup:Update()
   local icon = CT:ItemIcon(id)
   self.icon:SetTexture(icon or CT.ICON_PLACEHOLDER)
   if self.icon.SetDesaturated then self.icon:SetDesaturated(not icon) end
-  self.name:SetText((CT:IsTracked(id) and "|cff66ccffLive  |r" or "") .. name)
+  self.name:SetText((CT:IsTracked(id) and "|cff66ccffTracked  |r" or "") .. name)
   self.idText:SetText(format("|cff9d9d9d%d|r", id))
   local q = CT:Quote(id)
   local tr = (q and q.price and not q.none) and CT:Trend(id, q) or nil
@@ -408,14 +409,12 @@ function Lookup:Update()
     self.price:SetText("|cff9d9d9dNo price yet|r")
     self.trendMark:SetText("")
     self.trendPct:SetText("")
-    self.meta:SetText("|cff9d9d9dOpen the auction house to check it live, or run the feed updater and /reload.|r")
+    self.meta:SetText("|cff9d9d9dNo price yet. Use the auction house with Auctionator, or run the feed updater and /reload.|r")
     self:PlaceExtras(nil)
   end
   local status = self.statusText
-  if CT.scan and CT.scan.kind == "lookup" and CT.scan.ids[id] then
-    status = "Checking the auction house..."
-  elseif not status then
-    status = CT.ahOpen and "Auction house open. Check AH now queries it live." or "Auction house closed. Live prices need it open."
+  if not status then
+    status = "Prices come from the feed and Auctionator. Refresh price reads Auctionator for this item."
   end
   self.statusText = nil
   self.status:SetText(status)
@@ -431,10 +430,10 @@ function Lookup:Update()
   self.graph:SetSeries(series, win)
   self.summary:SetText(ns.Graph.Summary(series) .. format("  ·  %dd view  ·  keeps %d days", days, CT.HISTORY_DAYS))
   self.trackBtn:Enable()
-  self.trackBtn:SetText(CT:IsTracked(id) and "Stop tracking" or "Track live")
+  self.trackBtn:SetText(CT:IsTracked(id) and "Stop tracking" or "Track")
   if self.trackBtn.label then self.trackBtn.label:SetText(self.trackBtn:GetText() or "") end
   self.tickerBtn:Enable()
   self.tickerBtn:SetText(CT:OnTicker(id) and "Remove from ticker" or "Add to ticker")
   if self.tickerBtn.label then self.tickerBtn.label:SetText(self.tickerBtn:GetText() or "") end
-  if CT.ahOpen and not CT.scan then self.ahBtn:Enable() else self.ahBtn:Disable() end
+  self.ahBtn:Enable()
 end
